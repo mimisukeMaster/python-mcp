@@ -82,50 +82,101 @@ class BlenderCommHandler(socketserver.BaseRequestHandler):
             response = {"status": "ERROR", "message": str(e)}
             self.request.sendall(json.dumps(response).encode('utf-8'))
 
-# --- 以下、UIとサーバー起動/停止のコード (変更なし) ---
 class BlenderTCPServer(socketserver.TCPServer):
+    """ソケットを再利用可能にするカスタムTCPサーバー"""
     allow_reuse_address = True
+
+# サーバーインスタンスとスレッドを保持するグローバル変数
 server_thread = None
 tcp_server = None
+
 def start_server():
+    """TCPサーバーをバックグラウンドスレッドで起動する"""
     global tcp_server, server_thread
-    if server_thread and server_thread.is_alive(): return
+    # 既にサーバーが起動中の場合は何もしない
+    if server_thread and server_thread.is_alive():
+        return
+    
     HOST, PORT = "localhost", 65432
     tcp_server = BlenderTCPServer((HOST, PORT), BlenderCommHandler)
+    
+    # サーバーの待受ループを別スレッドで実行
     server_thread = threading.Thread(target=tcp_server.serve_forever)
+    # Blenderが終了したときにスレッドも自動で終了するように設定
     server_thread.daemon = True
     server_thread.start()
     print(f"MCP Blender Server started on {HOST}:{PORT}")
+
 def stop_server():
+    """実行中のTCPサーバーを安全に停止する"""
     global tcp_server
     if tcp_server:
         print("Shutting down MCP Blender Server.")
-        tcp_server.shutdown()
-        tcp_server.server_close()
+        tcp_server.shutdown() # サーバーのループを停止
+        tcp_server.server_close() # ソケットを閉じる
         tcp_server = None
+
 class MCP_PT_Panel(bpy.types.Panel):
-    bl_label, bl_idname, bl_space_type, bl_region_type, bl_category = "MCP Server", "MCP_PT_panel", 'VIEW_3D', 'UI', 'MCP'
+    """Blenderの3DビューのサイドバーにUIパネルを追加するクラス"""
+    bl_label = "MCP Server"
+    bl_idname = "MCP_PT_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MCP' # サイドバーのタブ名
+
     def draw(self, context):
-        self.layout.operator("mcp.start_server" if not tcp_server else "mcp.stop_server", text="Start Server" if not tcp_server else "Stop Server")
+        """パネルのUIを描画する"""
+        # サーバーが起動中かどうかに応じて表示するボタンを切り替える
+        if tcp_server:
+            self.layout.operator("mcp.stop_server", text="Stop Server", icon="CANCEL")
+        else:
+            self.layout.operator("mcp.start_server", text="Start Server", icon="PLAY")
+
 class MCP_OT_StartServer(bpy.types.Operator):
-    bl_idname, bl_label = "mcp.start_server", "Start MCP Server"
+    """「Start Server」ボタンの処理を定義するクラス"""
+    bl_idname = "mcp.start_server"
+    bl_label = "Start MCP Server"
+
     def execute(self, context):
-        start_server(); return {'FINISHED'}
+        """ボタンが押されたときにstart_server関数を呼び出す"""
+        start_server()
+        return {'FINISHED'}
+
 class MCP_OT_StopServer(bpy.types.Operator):
-    bl_idname, bl_label = "mcp.stop_server", "Stop MCP Server"
+    """「Stop Server」ボタンの処理を定義するクラス"""
+    bl_idname = "mcp.stop_server"
+    bl_label = "Stop MCP Server"
+
     def execute(self, context):
-        stop_server(); return {'FINISHED'}
+        """ボタンが押されたときにstop_server関数を呼び出す"""
+        stop_server()
+        return {'FINISHED'}
+
 @persistent
 def load_handler(dummy):
+    """Blenderファイルが読み込まれた後に自動で実行される関数"""
     start_server()
+
+# Blenderに登録するクラスをまとめたタプル
 classes = (MCP_PT_Panel, MCP_OT_StartServer, MCP_OT_StopServer)
+
 def register():
-    for cls in classes: bpy.utils.register_class(cls)
+    """アドオンが有効化されたときに呼び出される関数"""
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    # コマンドキューを定期的にチェックするタイマーを登録
     bpy.app.timers.register(execute_commands_from_queue, first_interval=1.0)
+    # ファイルロード時のハンドラーを追加
     bpy.app.handlers.load_post.append(load_handler)
+    # アドオン有効化時にサーバーを起動
     start_server()
+
 def unregister():
+    """アドオンが無効化されたときに呼び出される関数"""
     stop_server()
+    # 登録したハンドラーやタイマーを解除
     bpy.app.handlers.load_post.remove(load_handler)
     bpy.app.timers.unregister(execute_commands_from_queue)
-    for cls in reversed(classes): bpy.utils.unregister_class(cls)
+    # 登録したクラスを解除
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
