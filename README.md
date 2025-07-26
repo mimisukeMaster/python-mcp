@@ -1,2 +1,4 @@
 # python-mcp
-This repository contains a project for controlling Blender in real-time from an external application, using a custom MCP client and a local server. It allows for dynamic manipulation of Blender objects and scenes through client commands.
+pythonによるMCPクライアントとローカルサーバを使って、外部からアプリケーションを操作するリポジトリ
+
+クライアントからのコマンドを通じて、アプリを動的に制御します。現時点では、Blenderを制御できる形となっています。各アプリケーションのmcpサーバを記述することで、`mcp_server.py`を介して`mcp_client.py`から制御することが可能です。

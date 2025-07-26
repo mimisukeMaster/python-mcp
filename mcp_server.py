@@ -4,8 +4,8 @@ import socket
 import json
 from mcp.server.fastmcp import FastMCP
 
-# ログ設定: デバッグ情報は標準エラー出力(stderr)へ出力します
-# これにより、Claude for Desktopのログファイルに記録されます
+# ログ設定
+# デバッグ情報は標準エラー出力(stderr)へ出力
 logging.basicConfig(
     level=logging.INFO, 
     stream=sys.stderr, 
@@ -36,7 +36,9 @@ def send_to_blender(payload: dict) -> str:
             s.sendall(json.dumps(payload).encode('utf-8'))
             response_data = s.recv(1024)
             response = json.loads(response_data.decode('utf-8'))
+
             return response.get("message", "Blenderから予期せぬ応答がありました。")
+        
     except ConnectionRefusedError:
         return "Blenderへの接続に失敗しました。Blenderが起動しているか、MCPアドオンが有効になっているか確認してください。"
     except Exception as e:

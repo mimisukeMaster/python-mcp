@@ -38,7 +38,7 @@ def execute_commands_from_queue():
             operator_func = getattr(op_module_obj, op_name)
             
             print(f"Executing: bpy.ops.{operator_path}(**{params})")
-            result = operator_func('INVOKE_DEFAULT', True, **params)
+            result = operator_func('EXEC_DEFAULT', True, **params)
             
             # 正常に終了した場合
             if 'FINISHED' in result:
