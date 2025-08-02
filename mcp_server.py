@@ -1,68 +1,106 @@
 import sys
 import logging
-import socket
+import os
 import json
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
+from dotenv import load_dotenv
+
+# 必要なライブラリをインポート
+from tavily import TavilyClient
+from huggingface_hub import InferenceClient
+import requests
+from moviepy import ImageClip, AudioFileClip
+from PIL import Image
+
+# 環境変数をロード
+load_dotenv()
 
 # ログ設定
-# デバッグ情報は標準エラー出力(stderr)へ出力
-logging.basicConfig(
-    level=logging.INFO, 
-    stream=sys.stderr, 
-    format='[%(asctime)s][SERVER] %(message)s'
-)
+logging.basicConfig(level=logging.INFO, stream=sys.stderr, format='[SERVER] %(message)s')
 
-# FastMCPサーバーを初期化（自作の場合名前は何でもよい）
-mcp = FastMCP("python-mcp-server")
+# サーバー初期化
+mcp = FastMCP("video-generator-server")
+OUTPUT_DIR = Path("./outputs")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
+# --- Tool 1: Web検索 (Tavily) ---
 @mcp.tool()
-def greet(name: str) -> str:
-    """
-    指定された名前で挨拶を返す関数（通信テスト用）
-    
-    Args:
-        name: 挨拶する相手の名前
-    """
-    logging.info(f"greetツールが引数 '{name}' で実行されました。")
-    return f"こんにちは、{name}さん！"
-
-
-def send_to_blender(payload: dict) -> str:
-    """BlenderのサーバーにJSON形式でコマンドを送信する関数"""
-    HOST, PORT = "localhost", 65432
+def search_web(query: str) -> str:
+    """指定されたクエリでWebを検索し、AIに適した要約済みの検索結果を返す"""
+    logging.info(f"Searching web with Tavily for: {query}")
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((HOST, PORT))
-            s.sendall(json.dumps(payload).encode('utf-8'))
-            response_data = s.recv(1024)
-            response = json.loads(response_data.decode('utf-8'))
-
-            return response.get("message", "Blenderから予期せぬ応答がありました。")
-        
-    except ConnectionRefusedError:
-        return "Blenderへの接続に失敗しました。Blenderが起動しているか、MCPアドオンが有効になっているか確認してください。"
+        tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+        response = tavily.search(query=query, search_depth="basic", max_results=5)
+        formatted_results = "\n".join([f"- {obj['title']}: {obj['content']}" for obj in response['results']])
+        return f"Web検索結果:\n{formatted_results}"
     except Exception as e:
-        return f"Blenderとの通信中に予期せぬエラーが発生しました: {e}"
+        return f"TavilyでのWeb検索中にエラーが発生しました: {e}"
 
+# --- Tool 2: 画像生成 (Hugging Face) ---
 @mcp.tool()
-def execute_blender_operator(operator: str, params_json: str = '{}') -> str:
-    """
-    Blenderの任意のオペレーター(bpy.ops)を指定されたパラメータで実行する関数
-    
-    Args:
-        operator: 実行したいオペレーターのパス 例: 'mesh.primitive_cube_add' 'transform.rotate'
-        params_json: オペレーターに渡す引数をJSON形式の文字列で指定 例: '{"size": 2, "location": [1, 2, 3]}', '{"value": 1.5708, "orient_axis": "Z"}'
-    """
-    logging.info(f"Executing Blender operator: {operator} with params: {params_json}")
+def generate_image(prompt: str) -> str:
+    """指定されたプロンプトで画像を生成し、PNG形式(.png)で保存後、そのファイルパスを返す"""
+    logging.info(f"Generating image with Hugging Face for: {prompt}")
     try:
-        # JSON文字列をPythonの辞書に変換
-        params = json.loads(params_json)
-    except json.JSONDecodeError:
-        return "エラー: params_jsonの形式が正しくありません。"
-    
-    # Blenderに送信するコマンドを作成
-    command = {"operator": operator, "params": params}
-    return send_to_blender(command)
+        client = InferenceClient(token=os.environ["HUGGINGFACE_API_KEY"])
+        
+        # text_to_imageはPillowのImageオブジェクトを返す
+        image_object = client.text_to_image(
+            prompt, 
+            model="stabilityai/stable-diffusion-xl-base-1.0"
+        )
+        
+        # PillowのImageオブジェクトをファイルに保存するには .save() メソッドを使う
+        img_path = OUTPUT_DIR / f"{prompt[:30].replace(' ', '_')}.png"
+        image_object.save(img_path)
+        
+        return str(img_path)
+    except Exception as e:
+        return f"Hugging Faceでの画像生成中にエラーが発生しました: {e}"
 
+# --- Tool 3: 音声合成 (VOICEVOX su-shiki API) ---
+@mcp.tool()
+def synthesize_speech(text: str, speaker_id: int = 3, filename: str = "narration") -> str:
+    """VOICEVOX Web APIを使用してテキストから音声を合成し、WAV形式(.wav)で保存後、そのファイルパスを返す"""
+    logging.info(f"Synthesizing speech with VOICEVOX API for: {text[:30]}...")
+    API_KEY = os.environ.get("VOICEVOX_API_KEY")
+    if not API_KEY:
+        return "エラー: 環境変数 VOICEVOX_API_KEY が設定されていません。"
+    VOICEVOX_URL = "https://api.su-shiki.com/v2/voicevox/audio/"
+    try:
+        params = {"text": text, "speaker": speaker_id, "key": API_KEY}
+        response = requests.post(VOICEVOX_URL, params=params, timeout=60)
+        if response.status_code != 200:
+            return f"エラー: VOICEVOX APIリクエスト失敗. Status: {response.status_code}, Body: {response.text}"
+        audio_path = OUTPUT_DIR / Path(filename).with_suffix('.wav')
+        with open(audio_path, "wb") as f:
+            f.write(response.content)
+        return str(audio_path)
+    except Exception as e:
+        return f"VOICEVOX APIでの音声合成中にエラーが発生しました: {e}"
+
+# --- Tool 4: 動画組立 (MoviePy) ---
+@mcp.tool()
+def create_video(image_path: str, audio_path: str, output_filename: str = "final_video") -> str:
+    """一枚の画像と一つの音声ファイルから動画を作成し、MP4形式(.mp4)で保存後、そのファイルパスを返す"""
+    logging.info(f"Creating video from {image_path} and {audio_path}")
+    try:
+        with AudioFileClip(audio_path) as audio_clip:
+            
+            final_clip = (ImageClip(image_path)
+                        .with_duration(audio_clip.duration)
+                        .with_audio(audio_clip))
+            
+            video_path = OUTPUT_DIR / Path(output_filename).with_suffix('.mp4')
+            final_clip.write_videofile(str(video_path), fps=24, codec="libx264", threads=4)
+            
+        return str(video_path)
+    except Exception as e:
+        import traceback
+        logging.error(f"動画作成中にエラーが発生しました: {e}\n{traceback.format_exc()}")
+        return f"動画作成中にエラーが発生しました: {e}"
+
+# --- サーバー実行 ---
 if __name__ == "__main__":
     mcp.run()
